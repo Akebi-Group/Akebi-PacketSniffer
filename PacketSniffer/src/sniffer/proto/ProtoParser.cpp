@@ -30,6 +30,28 @@ namespace sniffer
 		m_ProtoDirPath = dirPath;
 	}
 
+	void Split(const std::string& src, const std::string& separator, std::vector<std::string>& dest)
+	{
+		std::string str = src;
+		std::string substring;
+		std::string::size_type start = 0, index;
+		dest.clear();
+		index = str.find_first_of(separator, start);
+		do
+		{
+			if (index != std::string::npos)
+			{
+				substring = str.substr(start, index - start);
+				dest.push_back(substring);
+				start = index + separator.size();
+				index = str.find(separator, start);
+				if (start == std::string::npos) break;
+			}
+		} while (index != std::string::npos);
+		substring = str.substr(start);
+		dest.push_back(substring);
+	}
+
 	void ProtoParser::LoadIDsFromFile(const std::string& filepath)
 	{
 		m_IDFilePath = filepath;
@@ -40,7 +62,7 @@ namespace sniffer
 		const std::lock_guard<std::mutex> lock(_mutex);
 		m_NameMap.clear();
 		m_IdMap.clear();
-		
+
 		std::ifstream file;
 		file.open(filepath);
 		if (!file.is_open())
@@ -48,14 +70,27 @@ namespace sniffer
 			LOG_WARNING("Failed to load proto id file.");
 			return;
 		}
-			
-		auto content = nlohmann::json::parse(file);
-		for (nlohmann::json::iterator it = content.begin(); it != content.end(); ++it)
+		if (filepath.find(".json") != std::string::npos)
 		{
-			auto id = it.value().is_number() ? static_cast<uint32_t>(it.value()) : std::stoul(it.key());
-			auto name = it.value().is_number() ? it.key() : static_cast<std::string>(it.value());;
-			m_NameMap[id] = name;
-			m_IdMap[name] = id;
+			auto content = nlohmann::json::parse(file);
+			for (nlohmann::json::iterator it = content.begin(); it != content.end(); ++it)
+			{
+				auto id = it.value().is_number() ? static_cast<uint32_t>(it.value()) : std::stoul(it.key());
+				auto name = it.value().is_number() ? it.key() : static_cast<std::string>(it.value());;
+				m_NameMap[id] = name;
+				m_IdMap[name] = id;
+			}
+		}
+		else if (filepath.find(".csv") != std::string::npos)
+		{
+			std::string line;
+			while (std::getline(file, line)) {
+				std::vector<std::string> ret;
+				Split(line, ",", ret);
+				auto id = std::stoi(ret[1]);
+				m_NameMap[id] = ret[0];
+				m_IdMap[ret[0]] = id;
+			}
 		}
 		file.close();
 	}
@@ -115,11 +150,11 @@ namespace sniffer
 						break;
 					start_index++;
 				}
-				
+
 				size_t index = 0;
 				for (auto& [pattern, patternSize] : cmdIDPatterns)
 				{
-					
+
 					if (start_index + patternSize > line.size())
 						continue;
 
@@ -172,7 +207,7 @@ namespace sniffer
 	{
 
 	}
-	
+
 	void ProtoParser::Load(const std::string& idFilePath, const std::string& protoDir)
 	{
 		LoadIDsFromFile(idFilePath);
@@ -217,7 +252,7 @@ namespace sniffer
 
 		return true;
 	}
-	
+
 	bool ProtoParser::Parse(uint32_t id, const std::vector<byte>& data, ProtoMessage& message)
 	{
 		auto name = GetName(id);
@@ -265,7 +300,7 @@ namespace sniffer
 
 		ProtoValue key;
 		result.concat(ConvertValue(key, message, reflection, descriptor->field(0), -1));
-		
+
 		ProtoValue value;
 		result.concat(ConvertField(value, descriptor->field(1), message, reflection));
 
@@ -302,7 +337,7 @@ namespace sniffer
 
 			if (field->cpp_type() == FieldDescriptor::CPPTYPE_MESSAGE)
 			{
-				
+
 				auto& sub_message = field->is_repeated() ?
 					reflection->GetRepeatedMessage(message, field, j) :
 					reflection->GetMessage(message, field);
@@ -471,7 +506,7 @@ namespace sniffer
 		return std::string(kTypeUrlPrefix) + "/" +
 			message.GetDescriptor()->full_name();
 	}
-	
+
 	static void GetTypeByUrl(const Message& message, const std::string& type_url, google::protobuf::Type& type)
 	{
 		const DescriptorPool* pool = message.GetDescriptor()->file()->pool();
@@ -514,10 +549,10 @@ namespace sniffer
 				{
 					google::protobuf::Type nested_type;
 					GetTypeByUrl(message, field.type_url(), nested_type);
-					
+
 					is_map = nested_type.name().find("MapEntry") != std::string::npos;
-				} 
-				
+				}
+
 				if (is_map)
 					container = ProtoValue::map_type();
 				else
@@ -555,7 +590,7 @@ namespace sniffer
 
 					uint32_t id = ProtoEnumCache::GetID(enum_type.name());
 					if (id == 0)
-					{						
+					{
 						std::unordered_map<uint32_t, std::string> values;
 						for (auto& value : enum_type.enumvalue())
 							values[value.number()] = value.name();
@@ -632,13 +667,13 @@ namespace sniffer
 
 		ProtoValue& value = field->is_repeated() ? proto_value.get<ProtoValue::list_type>().emplace_back() : proto_value;
 		switch (field->cpp_type()) {
-																				  
+
 #define OUTPUT_FIELD(CPPTYPE, METHOD)                                			  			\
 case FieldDescriptor::CPPTYPE_##CPPTYPE:										  			\
 	value = field->is_repeated() ? reflection->GetRepeated##METHOD(message, field, index) :	\
 		reflection->Get##METHOD(message, field);											\
     break
-		
+
 			OUTPUT_FIELD(INT32, Int32);
 			OUTPUT_FIELD(INT64, Int64);
 			OUTPUT_FIELD(UINT32, UInt32);
@@ -657,7 +692,7 @@ case FieldDescriptor::CPPTYPE_##CPPTYPE:										  			\
 				: reflection->GetStringReference(message, field, &scratch);
 			if (field->type() == FieldDescriptor::TYPE_STRING)
 				value = svalue;
-			else 
+			else
 			{
 				value = ProtoValue::bseq_type(svalue.begin(), svalue.end());
 			}
@@ -692,7 +727,7 @@ case FieldDescriptor::CPPTYPE_##CPPTYPE:										  			\
 			}
 			else
 				value = fmt::format("UnkEnumValue({})", enum_index);
-			
+
 			break;
 		}
 
@@ -704,5 +739,5 @@ case FieldDescriptor::CPPTYPE_##CPPTYPE:										  			\
 			break;
 		}
 		return result;
-	}	
+	}
 }
